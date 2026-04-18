@@ -13,7 +13,7 @@ from lightning import Callback, LightningModule, Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import Logger
 from lightning.pytorch.loggers.wandb import WandbLogger
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from topobench.data.preprocessor import PreProcessor
 from topobench.dataloader import TBDataloader
