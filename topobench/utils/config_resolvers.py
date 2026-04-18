@@ -6,6 +6,32 @@ import omegaconf
 import torch
 
 
+def define_task_level(dataset_task_level, learning_setting):
+    r"""Define the task level for a given dataset task level and learning setting.
+
+    Parameters
+    ----------
+    dataset_task_level : str
+        Task level defined in the dataset configuration file.
+    learning_setting : str
+        Learning setting defined in the dataset split parameters.
+
+    Returns
+    -------
+    str
+        Task level for the model.
+
+    Raises
+    ------
+    ValueError
+        If the dataset task level or learning setting is invalid.
+    """
+    if dataset_task_level == "node" and learning_setting == "inductive":
+        return "node_inductive"
+    else:
+        return dataset_task_level
+
+
 def get_flattened_channels(num_nodes, channels):
     r"""Get the output dimension of flattening a feature matrix.
 

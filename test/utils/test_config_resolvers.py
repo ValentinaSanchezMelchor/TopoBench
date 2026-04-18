@@ -4,6 +4,7 @@ import pytest
 from omegaconf import OmegaConf
 import hydra
 from topobench.utils.config_resolvers import (
+    define_task_level,
     infer_in_channels,
     infer_num_cell_dimensions,
     infer_topotune_num_cell_dimensions,
@@ -29,6 +30,16 @@ class TestConfigResolvers:
         self.cliq_lift_transform = OmegaConf.load("configs/transforms/liftings/graph2simplicial/clique.yaml")
         self.feature_lift_transform = OmegaConf.load("configs/transforms/feature_liftings/concatenate.yaml")
         hydra.initialize(version_base="1.3", config_path="../../configs", job_name="job")
+
+    def test_define_task_level(self):
+        """Test define_task_level."""
+        # node + inductive -> node_inductive (the bug-fix branch)
+        assert define_task_level("node", "inductive") == "node_inductive"
+
+        # else branch: any other combination returns dataset_task_level unchanged
+        assert define_task_level("node", "transductive") == "node"
+        assert define_task_level("graph", "inductive") == "graph"
+        assert define_task_level("graph", "transductive") == "graph"
 
     def test_get_default_trainer(self):
         """Test get_default_trainer."""

@@ -27,6 +27,7 @@ from topobench.utils import (
     task_wrapper,
 )
 from topobench.utils.config_resolvers import (
+    define_task_level,
     get_default_metrics,
     get_default_trainer,
     get_default_transform,
@@ -59,6 +60,9 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ------------------------------------------------------------------------------------ #
 
 
+OmegaConf.register_new_resolver(
+    "define_task_level", define_task_level, replace=True
+)
 OmegaConf.register_new_resolver(
     "get_default_metrics", get_default_metrics, replace=True
 )
