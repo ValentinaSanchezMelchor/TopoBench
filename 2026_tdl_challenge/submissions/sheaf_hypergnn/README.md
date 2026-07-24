@@ -14,7 +14,7 @@ Sheaf Hypergraph Networks (SheafHyperGNN)
 
 ## Status
 
-Draft / work in progress
+Ready for review
 
 ## Summary
 
@@ -40,7 +40,11 @@ Key hyperparameters for the submitted run (matching the reference
 - symmetric degree normalization
 - averaged hyperedge initialization
 - `cp_decomp` restriction-map predictor
-- hidden width `256`, dropout `0.7`
+- configured hidden width `256`, dropout `0.7`
+
+The official challenge evaluator overrides every compatible feature encoder to
+width `64`; because this model derives its hidden width from the encoder, the
+reported GraphUniverse runs use hidden width `64`.
 
 ## Adaptations from the reference implementation
 
@@ -83,17 +87,28 @@ separate architectures and are outside this PR.
 - [x] Add dense-vs-scatter sheaf diffusion sanity test.
 - [x] Update `test/pipeline/test_pipeline.py`.
 - [x] Run TopoBench pipeline smoke test with `graph/MUTAG`.
-- [ ] Re-run the official GraphUniverse evaluation notebook after the final
+- [x] Re-run the official GraphUniverse evaluation notebook after the final
   architecture cleanup.
-- [ ] Add the regenerated `results.json`.
+- [x] Add the regenerated `results.json`.
 
 ## Validation
 
 - `python -m ruff check topobench/nn/backbones/hypergraph/sheaf_hypergnn.py test/nn/backbones/hypergraph/test_sheaf_hypergnn.py`
 - `python -m pytest test/nn/backbones/hypergraph/test_sheaf_hypergnn.py -q`
 - `python -m pytest test/pipeline/test_pipeline.py -q`
+- Official GraphUniverse sanity check: all 24 task/setting configurations
+  passed on an NVIDIA A40.
+- Official `run_evaluation.ipynb`: completed all 72 runs and generated
+  [`results.json`](results.json).
 
 ## Results
+
+The official evaluation completed 36 community-detection and 36
+triangle-counting runs over seeds `42`, `43`, and `44`. Across all structural
+settings and seeds, mean in-distribution community-detection accuracy was
+`0.4721`; mean triangle-counting MSE normalized by the number of structural
+triangles was `0.6734`. The result payload contains no missing or non-finite
+metrics.
 
 ## Reference
 
