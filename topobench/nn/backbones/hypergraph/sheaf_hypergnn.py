@@ -367,8 +367,14 @@ class _DiagonalSheafBuilder(nn.Module):
     """Predict diagonal restriction maps for every non-zero incidence pair.
 
     This is the TopoBench equivalent of the official ``SheafBuilderDiag``.
-    The block-prediction branches below intentionally mirror
-    ``predict_blocks*`` from the reference implementation.
+    The four restriction-map prediction branches mirror the corresponding
+    ``predict_blocks*`` functions in the reference implementation.
+
+    This implementation preserves the reference builder's executed behavior.
+    For ``cp_V``, it replaces the hidden-channel count mistakenly passed to the
+    normalization option with the configured ``input_norm`` boolean. It also
+    handles empty incidence data and uses explicit graph dimensions so isolated
+    hyperedges remain represented.
 
     Parameters
     ----------
@@ -383,9 +389,11 @@ class _DiagonalSheafBuilder(nn.Module):
     sheaf_act : str, optional
         Activation applied to restriction-map values.
     prediction_type : str, optional
-        Reference restriction-map predictor variant.
+        Method used to construct hyperedge features before predicting the
+        restriction maps.
     special_head : bool, optional
-        Whether to fix the final stalk coordinate to one.
+        Whether to fix the final diagonal value to one, creating a channel
+        similar to standard hypergraph convolution.
     input_norm : bool, optional
         Whether predictor projections use input LayerNorm.
     """
@@ -450,9 +458,9 @@ class _DiagonalSheafBuilder(nn.Module):
     def reset_parameters(self) -> None:
         """Reset parameters (reinitialise the diagonal restriction-map predictor layers)."""
         self.sheaf_lin.reset_parameters()
-        if hasattr(self, "sheaf_lin2"):
+        if self.prediction_type == "MLP_var3":
             self.sheaf_lin2.reset_parameters()
-        if hasattr(self, "cp_W"):
+        elif self.prediction_type == "cp_decomp":
             self.cp_W.reset_parameters()
             self.cp_V.reset_parameters()
 
@@ -600,6 +608,12 @@ def _expand_diagonal(
     stalk_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Expand diagonal ``d``-vectors to sparse ``Nd x Ed`` coordinates.
+
+    For each nonzero incidence ``(node, hyperedge)``, the model predicts ``d``
+    diagonal restriction values. This function expands that incidence into the
+    coordinates ``(node * d + k, hyperedge * d + k)`` for ``k = 0, ..., d - 1``,
+    producing the sparse ``Nd x Ed`` sheaf incidence representation. Off-diagonal
+    coordinates are omitted because the restriction maps are diagonal.
 
     Parameters
     ----------
