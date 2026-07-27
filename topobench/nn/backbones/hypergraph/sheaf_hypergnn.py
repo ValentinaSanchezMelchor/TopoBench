@@ -295,6 +295,11 @@ def _incidence_to_edge_index(
 ) -> tuple[torch.Tensor, int]:
     """Convert sparse or dense incidence to ``[2, nnz]`` indices.
 
+    The returned coordinate tensor contains only nonzero incidences and therefore
+    does not retain the full matrix shape. The total number of hyperedges is
+    returned separately so isolated hyperedges, represented by empty columns, are
+    not lost.
+
     Parameters
     ----------
     incidence_hyperedges : torch.Tensor
@@ -487,9 +492,10 @@ class _DiagonalSheafBuilder(nn.Module):
         hyperedge_index : torch.Tensor
             Non-zero node-to-hyperedge incidence coordinates.
         num_nodes : int
-            Number of nodes.
+            Total number of nodes, used to reshape the stalk-expanded features.
         num_edges : int
-            Number of hyperedges.
+            Total number of hyperedges, taken from the incidence-matrix width so
+            hyperedges with no nonzero incidences are still counted.
 
         Returns
         -------
@@ -521,6 +527,8 @@ class _DiagonalSheafBuilder(nn.Module):
             head[-1] = 1.0
             restriction_diagonals = restriction_diagonals * mask + head
 
+        # Store the unexpanded restriction maps only for tests, as in the
+        # reference implementation.
         self.last_restriction_maps = restriction_diagonals
         return _expand_diagonal(hyperedge_index, restriction_diagonals, self.d)
 
@@ -532,6 +540,18 @@ class _DiagonalSheafBuilder(nn.Module):
         num_edges: int,
     ) -> torch.Tensor:
         """Predict one diagonal restriction vector per incidence.
+
+        All variants concatenate each incident node feature with a hyperedge
+        feature, then use ``sheaf_lin`` to predict ``stalk_dim`` diagonal
+        restriction values. They differ only in how the hyperedge feature is
+        constructed:
+
+        * ``MLP_var1`` uses the hyperedge features passed into the builder.
+        * ``MLP_var2`` averages the current features of the incident nodes.
+        * ``MLP_var3`` transforms the node features and sums them per
+          hyperedge.
+        * ``cp_decomp`` combines product-pooled transformed node features with
+          sum-pooled node features.
 
         Parameters
         ----------
@@ -555,6 +575,7 @@ class _DiagonalSheafBuilder(nn.Module):
         if self.prediction_type == "MLP_var1":
             edge_features = e.index_select(0, col)
         elif self.prediction_type == "MLP_var2":
+            # Average the current node features within each hyperedge.
             pooled = torch_scatter.scatter(
                 x_row,
                 col,
@@ -564,6 +585,7 @@ class _DiagonalSheafBuilder(nn.Module):
             )
             edge_features = pooled.index_select(0, col)
         elif self.prediction_type == "MLP_var3":
+            # Transform the nodes, then sum them within each hyperedge.
             lifted = self.sheaf_lin2(x)
             pooled = torch_scatter.scatter(
                 lifted.index_select(0, row),
@@ -574,6 +596,7 @@ class _DiagonalSheafBuilder(nn.Module):
             )
             edge_features = pooled.index_select(0, col)
         else:
+            # Compute a CP-decomposition-inspired product representation.
             ones = x_row.new_ones((x_row.shape[0], 1))
             x_with_bias = torch.cat((x_row, ones), dim=-1)
             product_terms = torch.tanh(self.cp_W(x_with_bias))
@@ -591,11 +614,13 @@ class _DiagonalSheafBuilder(nn.Module):
                 dim_size=num_edges,
                 reduce="sum",
             )
+            # Add the sum-pooled node features, matching the reference.
             edge_features = torch.relu(self.cp_V(pooled_prod)) + torch.relu(
                 pooled_sum
             )
             edge_features = edge_features.index_select(0, col)
 
+        # Predict d diagonal values for every nonzero incidence.
         restriction_diagonals = self.sheaf_lin(
             torch.cat((x_row, edge_features), dim=-1)
         )
