@@ -227,6 +227,8 @@ class SheafHyperGNN(nn.Module):
 
         for layer_idx, conv in enumerate(self.convs):
             if self.dynamic_sheaf and layer_idx > 0:
+                # Recompute the restriction maps before every later diffusion
+                # layer, including the final layer.
                 h_idx, h_val = self.sheaf_builders[layer_idx](
                     x,
                     e,
@@ -237,6 +239,9 @@ class SheafHyperGNN(nn.Module):
 
             # Apply one sheaf Laplacian diffusion layer.
             x = conv(x, h_idx, h_val, num_nodes, num_edges)
+
+            # As in the reference implementation, apply ELU and dropout only
+            # between diffusion layers, not after the final layer.
             if layer_idx < self.num_layers - 1:
                 x = F.elu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
