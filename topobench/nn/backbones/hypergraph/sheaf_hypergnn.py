@@ -10,24 +10,26 @@ and a Sheaf Hypergraph Network layer in Section 3.3 as
 
 ``Y = sigma((I - Delta) (I x W_1) X_tilde W_2)``.
 
-This implementation follows the official ``SheafHyperGNNDiag`` code while
-making the following TopoBench-specific adaptations:
+This implementation follows the diagonal variant of the official ``SheafHyperGNN`` model
+(obtained by combining ``SheafHyperGNN``, ``SheafBuilderDiag``, and ``HyperDiffusionDiagSheafConv``),
+while making the following TopoBench-specific adaptations:
 
-* ``forward`` receives node features and a TopoBench incidence matrix instead
-  of a PyG ``Data`` object.
-* Hyperedge features are recomputed for every batch. The reference caches them
-  once, which is valid for its full-batch transductive setting but would reuse
-  stale features across different TopoBench mini-batches.
-* The reference materializes sparse ``H``, ``B^-1``, and ``D^-1`` matrices and
-  multiplies them with ``torch_sparse``. Here the identical operator is applied
-  with gather/scatter operations, avoiding a ``torch_sparse`` dependency and
-  an explicit ``Nd x Ed`` matrix product.
+* In the backbone, ``forward`` receives the node features and the node-hyperedge
+  incidence matrix as two separate tensors, instead of a complete PyG ``Data``
+  object.
+* Hyperedge features are recomputed for every batch. The original code reuses them
+  because it always processes the same complete hypergraph, but in TopoBench different
+  batches may contain different hypergraphs.
+* The original code uses sparse matrix multiplication for sheaf diffusion. Our version
+  computes the same operation by passing and summing messages between nodes and
+  hyperedges, avoiding the ``torch_sparse`` dependency and having large intermediate
+  matrices.
 * The backbone returns the final ``d * hidden_channels`` node embeddings.
-  TopoBench's readout supplies the task-specific classifier that is ``lin2`` in
-  the reference model.
+  TopoBench's readout converts them into predictions and replaces the original model's
+  final ``lin2`` layer.
 * The code uses ELU between diffusion layers because that is what the official
-  implementation executes, although Section 3.3 of the paper describes the
-  generic activation as ReLU.
+  implementation uses, although Section 3.3 of the paper describes the generic
+  activation as ReLU.
 
 Only the diagonal restriction-map family used by the submitted configuration
 is implemented. Orthogonal, low-rank, and general restriction maps are separate
@@ -224,6 +226,7 @@ class SheafHyperGNN(nn.Module):
                     num_edges,
                 )
 
+            # Apply one sheaf Laplacian diffusion layer.
             x = conv(x, h_idx, h_val, num_nodes, num_edges)
             if layer_idx < self.num_layers - 1:
                 x = F.elu(x)
@@ -231,7 +234,7 @@ class SheafHyperGNN(nn.Module):
 
         # The reference applies ``lin2: dH -> num_classes`` at this point.
         # TopoBench keeps task-specific classification in its readout, so the
-        # backbone exposes the same dH representation consumed by ``lin2``.
+        # backbone exposes the same dH representation used as input by ``lin2``.
         x = x.view(num_nodes, self.out_channels)
         return x, None
 
@@ -307,9 +310,9 @@ class _MLP(nn.Module):
     """One-layer predictor used by the official SheafHyperGNN code.
 
     The reference calls this module an MLP, but every block used by
-    SheafHyperGNNDiag is configured with ``num_layers=1``. In that case its
+    diagonal SheafHyperGNN is configured with ``num_layers=1``. In that case its
     hidden-width, hidden-activation, and dropout arguments are inactive. This
-    focused implementation keeps only the behavior that is actually executed:
+    implementation keeps only the behavior that is actually executed:
     optional input LayerNorm followed by one linear projection.
 
     Parameters
@@ -335,7 +338,7 @@ class _MLP(nn.Module):
         self.lins = nn.ModuleList([nn.Linear(in_channels, out_channels)])
 
     def reset_parameters(self) -> None:
-        """Reset parameters."""
+        """Reset parameters (reinitialise the linear layers and learnable normalization parameters)."""
         for lin in self.lins:
             lin.reset_parameters()
         for norm in self.normalizations:
@@ -443,7 +446,7 @@ class _DiagonalSheafBuilder(nn.Module):
             )
 
     def reset_parameters(self) -> None:
-        """Reset parameters."""
+        """Reset parameters (reinitialise the diagonal restriction-map predictor layers)."""
         self.sheaf_lin.reset_parameters()
         if hasattr(self, "sheaf_lin2"):
             self.sheaf_lin2.reset_parameters()
@@ -681,7 +684,7 @@ class _DiagonalSheafConv(nn.Module):
             self.register_parameter("bias", None)
 
     def reset_parameters(self) -> None:
-        """Reset parameters."""
+        """Reset parameters (reinitialise the diffusion layer’s projections and bias)."""
         if self.left_proj:
             self.lin_left_proj.reset_parameters()
         self.lin.reset_parameters()
@@ -798,7 +801,7 @@ def _normalisation_vectors(
     stalk_dim: int,
     norm_type: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return node and hyperedge normalization vectors from the paper code.
+    """Return node and hyperedge normalization vectors from the paper's code.
 
     Parameters
     ----------
