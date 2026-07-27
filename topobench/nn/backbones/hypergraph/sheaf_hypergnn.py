@@ -205,10 +205,14 @@ class SheafHyperGNN(nn.Module):
             ``[num_nodes, stalk_dim * hidden_channels]`` and a placeholder for
             compatibility with ``HypergraphWrapper``.
         """
-        edge_index, num_edges = _incidence_to_edge_index(incidence_hyperedges)
+        hyperedge_index, num_edges = _incidence_to_edge_index(
+            incidence_hyperedges
+        )
         num_nodes = x_0.size(0)
 
-        hyperedge_attr = self._init_hyperedge_attr(x_0, edge_index, num_edges)
+        hyperedge_attr = self._init_hyperedge_attr(
+            x_0, hyperedge_index, num_edges
+        )
 
         x = self.lin_in(x_0).view(num_nodes * self.d, self.hidden_channels)
         e = self.lin_in(hyperedge_attr).view(
@@ -216,7 +220,7 @@ class SheafHyperGNN(nn.Module):
         )
 
         h_idx, h_val = self.sheaf_builders[0](
-            x, e, edge_index, num_nodes, num_edges
+            x, e, hyperedge_index, num_nodes, num_edges
         )
 
         for layer_idx, conv in enumerate(self.convs):
@@ -224,7 +228,7 @@ class SheafHyperGNN(nn.Module):
                 h_idx, h_val = self.sheaf_builders[layer_idx](
                     x,
                     e,
-                    edge_index,
+                    hyperedge_index,
                     num_nodes,
                     num_edges,
                 )
@@ -244,7 +248,7 @@ class SheafHyperGNN(nn.Module):
     def _init_hyperedge_attr(
         self,
         x_0: torch.Tensor,
-        edge_index: torch.Tensor,
+        hyperedge_index: torch.Tensor,
         num_edges: int,
     ) -> torch.Tensor:
         """Initialize batch-local hyperedge features.
@@ -258,7 +262,7 @@ class SheafHyperGNN(nn.Module):
         ----------
         x_0 : torch.Tensor
             Node features of shape ``[num_nodes, in_channels]``.
-        edge_index : torch.Tensor
+        hyperedge_index : torch.Tensor
             Non-zero incidence coordinates of shape ``[2, num_incidences]``.
         num_edges : int
             Number of hyperedges, including isolated hyperedges.
@@ -275,11 +279,11 @@ class SheafHyperGNN(nn.Module):
                 device=x_0.device,
                 dtype=x_0.dtype,
             )
-        if edge_index.numel() == 0:
+        if hyperedge_index.numel() == 0:
             return x_0.new_zeros((num_edges, self.in_channels))
         return torch_scatter.scatter(
-            x_0[edge_index[0]],
-            edge_index[1],
+            x_0[hyperedge_index[0]],
+            hyperedge_index[1],
             dim=0,
             dim_size=num_edges,
             reduce="mean",
@@ -468,7 +472,7 @@ class _DiagonalSheafBuilder(nn.Module):
         self,
         x: torch.Tensor,
         e: torch.Tensor,
-        edge_index: torch.Tensor,
+        hyperedge_index: torch.Tensor,
         num_nodes: int,
         num_edges: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -480,7 +484,7 @@ class _DiagonalSheafBuilder(nn.Module):
             Stalk-expanded node features.
         e : torch.Tensor
             Stalk-expanded hyperedge features.
-        edge_index : torch.Tensor
+        hyperedge_index : torch.Tensor
             Non-zero node-to-hyperedge incidence coordinates.
         num_nodes : int
             Number of nodes.
@@ -492,15 +496,15 @@ class _DiagonalSheafBuilder(nn.Module):
         tuple[torch.Tensor, torch.Tensor]
             Expanded sparse incidence coordinates and restriction-map values.
         """
-        if edge_index.numel() == 0:
-            empty_index = edge_index.new_empty((2, 0))
+        if hyperedge_index.numel() == 0:
+            empty_index = hyperedge_index.new_empty((2, 0))
             return empty_index, x.new_empty((0,))
 
         x_mean = x.view(num_nodes, self.d, -1).mean(dim=1)
         e_mean = e.view(num_edges, self.d, -1).mean(dim=1)
 
         restriction_diagonals = self._predict_blocks(
-            x_mean, e_mean, edge_index, num_edges
+            x_mean, e_mean, hyperedge_index, num_edges
         )
 
         if self.apply_dropout:
@@ -518,13 +522,13 @@ class _DiagonalSheafBuilder(nn.Module):
             restriction_diagonals = restriction_diagonals * mask + head
 
         self.last_restriction_maps = restriction_diagonals
-        return _expand_diagonal(edge_index, restriction_diagonals, self.d)
+        return _expand_diagonal(hyperedge_index, restriction_diagonals, self.d)
 
     def _predict_blocks(
         self,
         x: torch.Tensor,
         e: torch.Tensor,
-        edge_index: torch.Tensor,
+        hyperedge_index: torch.Tensor,
         num_edges: int,
     ) -> torch.Tensor:
         """Predict one diagonal restriction vector per incidence.
@@ -535,7 +539,7 @@ class _DiagonalSheafBuilder(nn.Module):
             Stalk-reduced node features.
         e : torch.Tensor
             Stalk-reduced hyperedge features.
-        edge_index : torch.Tensor
+        hyperedge_index : torch.Tensor
             Non-zero node-to-hyperedge incidence coordinates.
         num_edges : int
             Number of hyperedges.
@@ -545,7 +549,7 @@ class _DiagonalSheafBuilder(nn.Module):
         torch.Tensor
             Restriction vectors of shape ``[num_incidences, stalk_dim]``.
         """
-        row, col = edge_index
+        row, col = hyperedge_index
         x_row = x.index_select(0, row)
 
         if self.prediction_type == "MLP_var1":
@@ -603,7 +607,7 @@ class _DiagonalSheafBuilder(nn.Module):
 
 
 def _expand_diagonal(
-    edge_index: torch.Tensor,
+    hyperedge_index: torch.Tensor,
     restriction_diagonals: torch.Tensor,
     stalk_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -617,7 +621,7 @@ def _expand_diagonal(
 
     Parameters
     ----------
-    edge_index : torch.Tensor
+    hyperedge_index : torch.Tensor
         Non-zero incidence coordinates of shape ``[2, num_incidences]``.
     restriction_diagonals : torch.Tensor
         Diagonal restriction vectors.
@@ -629,9 +633,9 @@ def _expand_diagonal(
     tuple[torch.Tensor, torch.Tensor]
         Expanded sparse coordinates and flattened restriction values.
     """
-    k = torch.arange(stalk_dim, device=edge_index.device)
-    node_block = edge_index[0].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
-    edge_block = edge_index[1].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
+    k = torch.arange(stalk_dim, device=hyperedge_index.device)
+    node_block = hyperedge_index[0].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
+    edge_block = hyperedge_index[1].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
     index = torch.stack([node_block.reshape(-1), edge_block.reshape(-1)])
     return index, restriction_diagonals.reshape(-1)
 
