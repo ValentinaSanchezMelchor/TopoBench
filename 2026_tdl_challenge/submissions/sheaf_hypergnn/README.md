@@ -22,25 +22,36 @@ This PR adds a TopoBench-native implementation of SheafHyperGNN (linear,
 diagonal variant) from Duta et al., "Sheaf Hypergraph Networks" (NeurIPS 2023),
 for the 2026 TDL Challenge.
 
-The paper enriches an ordinary hypergraph with a cellular sheaf, allowing the
-model to learn how information should be transferred across each
-node–hyperedge connection. It does this by attaching a `d`-dimensional vector
-space, called a stalk, to every node and hyperedge. A restriction map is a
-learned `d×d` transformation that maps a node's representation from its stalk
-into the stalk of an incident hyperedge. Whereas an ordinary 0/1 incidence
-matrix only records whether a node belongs to a hyperedge, the sheaf gives each
-recorded node–hyperedge connection its own restriction map. Together, these
-maps define the sheaf Laplacian that replaces the usual hypergraph Laplacian in
-the diffusion step.
+The paper extends an ordinary hypergraph so that each node–hyperedge connection
+describes not only whether a node and hyperedge are connected, but also how
+information should pass between them. This additional structure is called a
+cellular sheaf. The model constructs it by assigning every node and hyperedge
+its own `d`-dimensional vector space, called a stalk, in which its local
+information is represented. For each existing node–hyperedge connection, a
+learned `d×d` restriction map transforms the node's representation into the
+form it contributes to that hyperedge. Thus, while an ordinary 0/1 incidence
+entry only records that the connection exists, the restriction map also
+specifies how information is transferred across it. Together, these maps
+define the sheaf Laplacian, which replaces the usual hypergraph Laplacian in
+the model's diffusion step.
 
 The model uses node features and the incidence matrix as input. It initializes
-hyperedge features from the node features and uses them to predict the
-restriction maps. Sheaf Hypergraph Networks are designed to reduce
-over-smoothing. In standard hypergraph networks, repeatedly mixing information
-can make the representations of connected nodes increasingly similar.
-SheafHyperGNN first applies a learned transformation to each node–hyperedge
-connection, allowing nodes to share compatible information without forcing
-their representations to become identical.
+each hyperedge feature by averaging the features of its connected nodes, then
+uses the node and hyperedge features to predict the restriction maps. During
+diffusion, the sheaf Laplacian combines the transformed information within each
+hyperedge and uses it to update the node representations. After the final
+diffusion layer, TopoBench's readout converts the updated node embeddings into
+task predictions.
+
+The submitted implementation intentionally supports only the diagonal
+restriction-map variant of `SheafHyperGNN`. We selected the linear
+`SheafHyperGNN` architecture because it outperformed the nonlinear
+`SheafHyperGCN` on all eight real-world datasets evaluated in the paper. Within
+`SheafHyperGNN`, the paper's ablation found that diagonal maps achieved better
+accuracy on most tested datasets and provided a better balance between
+complexity and expressivity than low-rank and general maps. The orthogonal,
+low-rank, and general restriction-map variants, as well as the nonlinear
+`SheafHyperGCN` architecture, are outside the scope of this PR.
 
 Key hyperparameters for the submitted implementation (matching the reference
 diagonal `SheafHyperGNN` example):
