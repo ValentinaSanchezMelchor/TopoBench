@@ -11,6 +11,7 @@ from topobench.nn.backbones.hypergraph.sheaf_hypergnn import (
     _DiagonalSheafBuilder,
     _DiagonalSheafConv,
     _expand_diagonal,
+    _incidence_to_hyperedge_index,
 )
 from topobench.nn.readouts import NoReadOut
 from topobench.nn.wrappers import HypergraphWrapper
@@ -80,6 +81,59 @@ def _dense_sheaf_conv_reference(conv, x, h_idx, h_val, num_nodes, num_edges):
     return identity_term + node_norm.unsqueeze(-1) * (
         adjusted_operator @ x_for_diffusion
     )
+
+
+# Tests for incidence conversion
+
+
+class TestIncidenceToHyperedgeIndex:
+    """Tests for converting TopoBench incidence matrices."""
+
+    def test_dense_incidence(self):
+        """Dense input is converted to node-hyperedge coordinate pairs."""
+        incidence = torch.tensor(
+            [
+                [1.0, 0.0, 2.0],
+                [0.0, -1.0, 0.0],
+            ]
+        )
+
+        hyperedge_index, num_edges = _incidence_to_hyperedge_index(incidence)
+
+        expected = torch.tensor([[0, 0, 1], [0, 2, 1]])
+        assert torch.equal(hyperedge_index, expected)
+        assert num_edges == 3
+
+    def test_sparse_incidence_matches_dense(self):
+        """Sparse COO and dense inputs produce the same coordinates."""
+        incidence = torch.tensor(
+            [
+                [1.0, 0.0, 2.0],
+                [0.0, -1.0, 0.0],
+            ]
+        )
+
+        dense_index, dense_num_edges = _incidence_to_hyperedge_index(incidence)
+        sparse_index, sparse_num_edges = _incidence_to_hyperedge_index(
+            incidence.to_sparse()
+        )
+
+        assert torch.equal(sparse_index, dense_index)
+        assert sparse_num_edges == dense_num_edges
+
+    def test_isolated_hyperedge_is_counted(self):
+        """An empty incidence column remains included in the hyperedge count."""
+        incidence = torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
+
+        hyperedge_index, num_edges = _incidence_to_hyperedge_index(incidence)
+
+        assert torch.equal(hyperedge_index, torch.tensor([[0, 1], [0, 1]]))
+        assert num_edges == 3
 
 
 # Tests for SheafHyperGNN model
@@ -312,6 +366,35 @@ class TestDiagonalSheafBuilder:
         _, _, _, _, _, d, H = basic_inputs
         builder = _DiagonalSheafBuilder(H, d, False)
         builder.reset_parameters()
+
+    @pytest.mark.parametrize("stalk_dim", [1, 2, 3, 6])
+    def test_expand_diagonal_matches_expected_coordinates(self, stalk_dim):
+        """Expansion creates the expected diagonal coordinates and value order."""
+        hyperedge_index = torch.tensor([[1, 2, 4], [0, 3, 1]])
+        restriction_diagonals = torch.arange(
+            hyperedge_index.shape[1] * stalk_dim,
+            dtype=torch.float32,
+        ).view(-1, stalk_dim)
+
+        expanded_index, expanded_values = _expand_diagonal(
+            hyperedge_index,
+            restriction_diagonals,
+            stalk_dim,
+        )
+
+        expected_coordinates = [
+            [
+                node * stalk_dim + coordinate,
+                hyperedge * stalk_dim + coordinate,
+            ]
+            for node, hyperedge in hyperedge_index.t().tolist()
+            for coordinate in range(stalk_dim)
+        ]
+        expected_index = torch.tensor(expected_coordinates).t().contiguous()
+        expected_values = restriction_diagonals.reshape(-1)
+
+        assert torch.equal(expanded_index, expected_index)
+        assert torch.equal(expanded_values, expected_values)
 
 
 # Tests for diagonal sheaf diffusion

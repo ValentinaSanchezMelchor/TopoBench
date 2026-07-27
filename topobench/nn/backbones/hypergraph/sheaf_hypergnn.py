@@ -205,7 +205,9 @@ class SheafHyperGNN(nn.Module):
             ``[num_nodes, stalk_dim * hidden_channels]`` and a placeholder for
             compatibility with ``HypergraphWrapper``.
         """
-        hyperedge_index, num_edges = _incidence_to_edge_index(
+        # Convert TopoBench's incidence matrix to the coordinate format used by
+        # the reference implementation.
+        hyperedge_index, num_edges = _incidence_to_hyperedge_index(
             incidence_hyperedges
         )
         num_nodes = x_0.size(0)
@@ -290,15 +292,19 @@ class SheafHyperGNN(nn.Module):
         )
 
 
-def _incidence_to_edge_index(
+def _incidence_to_hyperedge_index(
     incidence_hyperedges: torch.Tensor,
 ) -> tuple[torch.Tensor, int]:
-    """Convert sparse or dense incidence to ``[2, nnz]`` indices.
+    """Convert a TopoBench incidence matrix to the reference coordinate format.
 
-    The returned coordinate tensor contains only nonzero incidences and therefore
-    does not retain the full matrix shape. The total number of hyperedges is
-    returned separately so isolated hyperedges, represented by empty columns, are
-    not lost.
+    TopoBench stores node-hyperedge membership as a matrix of shape
+    ``[num_nodes, num_hyperedges]``. The reference implementation instead uses a
+    ``[2, num_incidences]`` tensor whose first row contains node indices and whose
+    second row contains hyperedge indices.
+
+    Only nonzero positions are used because the model learns its own restriction
+    values. The total number of hyperedges is returned separately so isolated
+    hyperedges, which have no nonzero coordinates, remain represented.
 
     Parameters
     ----------
@@ -308,7 +314,7 @@ def _incidence_to_edge_index(
     Returns
     -------
     tuple[torch.Tensor, int]
-        Non-zero incidence coordinates and the total number of hyperedges.
+        Nonzero incidence coordinates and the total number of hyperedges.
     """
     num_edges = incidence_hyperedges.size(1)
     if incidence_hyperedges.layout == torch.sparse_coo:
