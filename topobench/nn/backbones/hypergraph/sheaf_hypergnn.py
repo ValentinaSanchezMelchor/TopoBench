@@ -17,6 +17,9 @@ while making the following TopoBench-specific adaptations:
 * In the backbone, ``forward`` receives the node features and the node-hyperedge
   incidence matrix as two separate tensors, instead of a complete PyG ``Data``
   object.
+* Node and hyperedge counts are passed explicitly because isolated hyperedges
+  do not appear in the nonzero incidence coordinates, but remain represented
+  as empty columns in TopoBench's incidence matrix.
 * Hyperedge features are recomputed for every batch. The original code reuses them
   because it always processes the same complete hypergraph, but in TopoBench different
   batches may contain different hypergraphs.
@@ -489,20 +492,26 @@ class _DiagonalSheafBuilder(nn.Module):
         x_mean = x.view(num_nodes, self.d, -1).mean(dim=1)
         e_mean = e.view(num_edges, self.d, -1).mean(dim=1)
 
-        blocks = self._predict_blocks(x_mean, e_mean, edge_index, num_edges)
+        restriction_diagonals = self._predict_blocks(
+            x_mean, e_mean, edge_index, num_edges
+        )
 
         if self.apply_dropout:
-            blocks = F.dropout(blocks, p=self.dropout, training=self.training)
+            restriction_diagonals = F.dropout(
+                restriction_diagonals,
+                p=self.dropout,
+                training=self.training,
+            )
 
         if self.special_head:
-            mask = blocks.new_ones(self.d)
-            head = blocks.new_zeros(self.d)
+            mask = restriction_diagonals.new_ones(self.d)
+            head = restriction_diagonals.new_zeros(self.d)
             mask[-1] = 0.0
             head[-1] = 1.0
-            blocks = blocks * mask + head
+            restriction_diagonals = restriction_diagonals * mask + head
 
-        self.last_restriction_maps = blocks
-        return _expand_diagonal(edge_index, blocks, self.d)
+        self.last_restriction_maps = restriction_diagonals
+        return _expand_diagonal(edge_index, restriction_diagonals, self.d)
 
     def _predict_blocks(
         self,
@@ -576,17 +585,19 @@ class _DiagonalSheafBuilder(nn.Module):
             )
             edge_features = edge_features.index_select(0, col)
 
-        blocks = self.sheaf_lin(torch.cat((x_row, edge_features), dim=-1))
+        restriction_diagonals = self.sheaf_lin(
+            torch.cat((x_row, edge_features), dim=-1)
+        )
         if self.sheaf_act == "tanh":
-            return torch.tanh(blocks)
+            return torch.tanh(restriction_diagonals)
         if self.sheaf_act == "sigmoid":
-            return torch.sigmoid(blocks)
-        return blocks
+            return torch.sigmoid(restriction_diagonals)
+        return restriction_diagonals
 
 
 def _expand_diagonal(
     edge_index: torch.Tensor,
-    blocks: torch.Tensor,
+    restriction_diagonals: torch.Tensor,
     stalk_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Expand diagonal ``d``-vectors to sparse ``Nd x Ed`` coordinates.
@@ -595,7 +606,7 @@ def _expand_diagonal(
     ----------
     edge_index : torch.Tensor
         Non-zero incidence coordinates of shape ``[2, num_incidences]``.
-    blocks : torch.Tensor
+    restriction_diagonals : torch.Tensor
         Diagonal restriction vectors.
     stalk_dim : int
         Stalk dimension.
@@ -609,7 +620,7 @@ def _expand_diagonal(
     node_block = edge_index[0].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
     edge_block = edge_index[1].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
     index = torch.stack([node_block.reshape(-1), edge_block.reshape(-1)])
-    return index, blocks.reshape(-1)
+    return index, restriction_diagonals.reshape(-1)
 
 
 class _DiagonalSheafConv(nn.Module):
