@@ -10,26 +10,28 @@ and a Sheaf Hypergraph Network layer in Section 3.3 as
 
 ``Y = sigma((I - Delta) (I x W_1) X_tilde W_2)``.
 
-This implementation follows the diagonal variant of the official ``SheafHyperGNN`` model
-(obtained by combining ``SheafHyperGNN``, ``SheafBuilderDiag``, and ``HyperDiffusionDiagSheafConv``),
-while making the following TopoBench-specific adaptations:
+This implementation follows the diagonal variant of the official
+``SheafHyperGNN`` model, obtained by combining ``SheafHyperGNN``,
+``SheafBuilderDiag``, and ``HyperDiffusionDiagSheafConv``, while making the
+following TopoBench-specific adaptations:
 
 * In the backbone, ``forward`` receives the node features and the node-hyperedge
   incidence matrix as two separate tensors, instead of a complete PyG ``Data``
   object.
-* Node and hyperedge counts are passed explicitly because isolated hyperedges
-  do not appear in the nonzero incidence coordinates, but remain represented
-  as empty columns in TopoBench's incidence matrix.
-* Hyperedge features are recomputed for every batch. The original code reuses them
-  because it always processes the same complete hypergraph, but in TopoBench different
+* The builder receives the total node and hyperedge counts explicitly.
+  ``num_nodes`` determines the stalk-expanded output shape, while the incidence
+  matrix width retains isolated hyperedges that are absent from the nonzero
+  coordinates.
+* Hyperedge features are recomputed for every batch. The original code reuses
+  them because it processes one fixed complete hypergraph, whereas TopoBench
   batches may contain different hypergraphs.
-* The original code uses sparse matrix multiplication for sheaf diffusion. Our version
-  computes the same operation by passing and summing messages between nodes and
-  hyperedges, avoiding the ``torch_sparse`` dependency and having large intermediate
-  matrices.
+* The original code uses sparse matrix multiplication for sheaf diffusion. This
+  version computes the same operation by passing and summing messages between
+  nodes and hyperedges, avoiding both the ``torch_sparse`` dependency in this
+  backbone and large intermediate matrix products.
 * The backbone returns the final ``d * hidden_channels`` node embeddings.
-  TopoBench's readout converts them into predictions and replaces the original model's
-  final ``lin2`` layer.
+  TopoBench's readout converts them into predictions and replaces the original
+  model's final ``lin2`` layer.
 * The code uses ELU between diffusion layers because that is what the official
   implementation uses, although Section 3.3 of the paper describes the generic
   activation as ReLU.
@@ -68,10 +70,10 @@ class SheafHyperGNN(nn.Module):
     num_layers : int, optional
         Number of sheaf diffusion layers.
     sheaf_act : str, optional
-        Activation applied to predicted restriction maps. ``"tanh"`` matches
-        the paper's reported/default command-line examples and preserves
-        signed maps. Supported values are ``"tanh"``, ``"sigmoid"``, and
-        ``"none"``.
+        Activation applied to predicted restriction maps. ``"tanh"`` matches the
+        submitted configuration and the official README example, and preserves
+        signed maps. The original command-line default is ``"sigmoid"``.
+        Supported values are ``"tanh"``, ``"sigmoid"``, and ``"none"``.
     sheaf_normtype : str, optional
         Normalization type from the reference implementation. Supported values
         are ``"degree_norm"``, ``"sym_degree_norm"``, ``"block_norm"``, and
@@ -196,7 +198,8 @@ class SheafHyperGNN(nn.Module):
         x_0 : torch.Tensor
             Node features with shape ``[num_nodes, in_channels]``.
         incidence_hyperedges : torch.Tensor
-            Incidence matrix with shape ``[num_nodes, num_hyperedges]``.
+            Dense or sparse COO incidence matrix with shape
+            ``[num_nodes, num_hyperedges]``.
 
         Returns
         -------
@@ -307,14 +310,15 @@ def _incidence_to_hyperedge_index(
     ``[2, num_incidences]`` tensor whose first row contains node indices and whose
     second row contains hyperedge indices.
 
-    Only nonzero positions are used because the model learns its own restriction
-    values. The total number of hyperedges is returned separately so isolated
-    hyperedges, which have no nonzero coordinates, remain represented.
+    Only positions with nonzero values are used because the model learns its own
+    restriction values. The total number of hyperedges is returned separately
+    so isolated hyperedges, which have no nonzero coordinates, remain
+    represented.
 
     Parameters
     ----------
     incidence_hyperedges : torch.Tensor
-        Sparse or dense node-to-hyperedge incidence matrix.
+        Dense or sparse COO node-to-hyperedge incidence matrix.
 
     Returns
     -------
@@ -323,7 +327,12 @@ def _incidence_to_hyperedge_index(
     """
     num_edges = incidence_hyperedges.size(1)
     if incidence_hyperedges.layout == torch.sparse_coo:
-        return incidence_hyperedges.coalesce().indices().long(), num_edges
+        incidence_hyperedges = incidence_hyperedges.coalesce()
+        nonzero_mask = incidence_hyperedges.values() != 0
+        hyperedge_index = incidence_hyperedges.indices()[
+            :, nonzero_mask
+        ].long()
+        return hyperedge_index, num_edges
     return incidence_hyperedges.nonzero(
         as_tuple=False
     ).t().contiguous().long(), num_edges
@@ -390,11 +399,11 @@ class _DiagonalSheafBuilder(nn.Module):
     The four restriction-map prediction branches mirror the corresponding
     ``predict_blocks*`` functions in the reference implementation.
 
-    This implementation preserves the reference builder's executed behavior.
-    For ``cp_V``, it replaces the hidden-channel count mistakenly passed to the
-    normalization option with the configured ``input_norm`` boolean. It also
-    handles empty incidence data and uses explicit graph dimensions so isolated
-    hyperedges remain represented.
+    This implementation matches the reference builder's operations, with three
+    fixes for TopoBench use. For ``cp_V``, it replaces the hidden-channel count
+    mistakenly passed to the normalization option with the configured
+    ``input_norm`` boolean. It also handles empty incidence data and uses
+    explicit graph dimensions so isolated hyperedges remain represented.
 
     Parameters
     ----------
@@ -515,7 +524,8 @@ class _DiagonalSheafBuilder(nn.Module):
         """
         if hyperedge_index.numel() == 0:
             empty_index = hyperedge_index.new_empty((2, 0))
-            return empty_index, x.new_empty((0,))
+            self.last_restriction_maps = x.new_empty((0, self.d))
+            return empty_index, self.last_restriction_maps.reshape(-1)
 
         x_mean = x.view(num_nodes, self.d, -1).mean(dim=1)
         e_mean = e.view(num_edges, self.d, -1).mean(dim=1)
@@ -688,9 +698,11 @@ class _DiagonalSheafConv(nn.Module):
     """One diagonal linear-sheaf diffusion layer.
 
     The official ``HyperDiffusionDiagSheafConv`` explicitly forms the sparse
-    operator ``M = D^-1 H B^-1 H^T``, flips the sign of every node-diagonal
-    block, and adds the identity. This implementation applies the same
-    ``I + M - 2 * blockdiag(M)`` operator through gather/scatter operations.
+    operator ``M = D_norm H B^-1 H^T``, where ``D_norm`` is ``D^-1`` or
+    ``D^-1/2`` depending on the normalization variant. It then flips the sign
+    of every node-diagonal block and adds the identity. This implementation
+    applies the same ``I + M - 2 * blockdiag(M)`` operator through
+    gather/scatter operations.
 
     Parameters
     ----------
@@ -867,7 +879,7 @@ def _normalisation_vectors(
     stalk_dim: int,
     norm_type: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return node and hyperedge normalization vectors from the paper's code.
+    """Return normalization vectors used by the reference implementation.
 
     Parameters
     ----------
@@ -951,7 +963,7 @@ def _diagonal_block_messages(
     of its node-diagonal blocks before adding the identity. For a diagonal
     restriction map, each expanded incidence coordinate is independent, so its
     self-message is simply ``alpha^2 * B^-1 * x``. Computing that contribution
-    directly avoids both the full sparse matrix and an ``N * E`` pair tensor.
+    directly avoids materializing the full sparse node-to-node product.
 
     Parameters
     ----------

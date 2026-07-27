@@ -18,21 +18,21 @@ Ready for review
 
 ## Summary
 
-This draft PR adds a TopoBench-native implementation of SheafHyperGNN (linear,
+This PR adds a TopoBench-native implementation of SheafHyperGNN (linear,
 diagonal variant) from Duta et al., "Sheaf Hypergraph Networks" (NeurIPS 2023),
 for the 2026 TDL Challenge.
 
-The idea from the paper: instead of a plain 0/1 incidence matrix, each
+The idea from the paper: instead of a 0/1 incidence matrix, each
 (node, hyperedge) pair gets a learned `d×d` restriction map, and each node and
 hyperedge carries a `d`-dimensional stalk. Those maps define a cellular sheaf
 over the hypergraph, and its sheaf Laplacian takes the place of the usual
-hypergraph Laplacian in the diffusion step. Nothing beyond the incidence matrix
-is needed and the maps are predicted from features. Sheaf Hypergraph Networks
-are designed to resist over-smoothing. Since agreement is enforced in the
-transformed stalk space rather than on raw features, stacking layers doesn't
-collapse every node to the same value the way a standard hypergraph network does.
+hypergraph Laplacian in the diffusion step. No externally supplied hyperedge
+features are required: the model initializes them from node features, then
+predicts the restriction maps from features. Sheaf Hypergraph Networks are
+designed to resist over-smoothing by enforcing agreement in the transformed
+stalk space rather than directly on the node features.
 
-Key hyperparameters for the submitted run (matching the reference
+Key hyperparameters for the submitted implementation (matching the reference
 `SheafHyperGNNDiag` example):
 
 - diagonal restriction maps, stalk dimension `d=6`
@@ -76,9 +76,9 @@ TopoBench's modular and batched execution:
 
 The submitted file intentionally implements only `SheafHyperGNNDiag`.
 Orthogonal, low-rank, general-map, and nonlinear `SheafHyperGCN` variants are
-separate architectures and are outside this PR.
+separate architectures and are not part of this PR.
 
-## Planned Implementation
+## Implementation Checklist
 
 - [x] Inspect official implementation and paper equations; confirm feasibility.
 - [x] Add SheafHyperGNN backbone under `topobench/nn/backbones/hypergraph/sheaf_hypergnn.py`.
