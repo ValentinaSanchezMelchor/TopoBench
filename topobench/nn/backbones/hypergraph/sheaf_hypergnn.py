@@ -312,11 +312,11 @@ def _incidence_to_edge_index(
 class _MLP(nn.Module):
     """One-layer predictor used by the official SheafHyperGNN code.
 
-    The reference calls this module an MLP, but every block used by
-    diagonal SheafHyperGNN is configured with ``num_layers=1``. In that case its
-    hidden-width, hidden-activation, and dropout arguments are inactive. This
-    implementation keeps only the behavior that is actually executed:
-    optional input LayerNorm followed by one linear projection.
+    The reference MLP supports hidden layers, but every MLP used by the
+    diagonal SheafHyperGNN is configured with ``num_layers=1``. Its hidden
+    width, hidden-activation, and hidden-layer dropout are therefore never
+    used. This implementation keeps only the executed behavior: optional
+    input LayerNorm followed by one linear projection.
 
     Parameters
     ----------
@@ -335,6 +335,7 @@ class _MLP(nn.Module):
         input_norm: bool = False,
     ) -> None:
         super().__init__()
+        self.input_norm = input_norm
         self.normalizations = nn.ModuleList(
             [nn.LayerNorm(in_channels) if input_norm else nn.Identity()]
         )
@@ -342,11 +343,9 @@ class _MLP(nn.Module):
 
     def reset_parameters(self) -> None:
         """Reset parameters (reinitialise the linear layers and learnable normalization parameters)."""
-        for lin in self.lins:
-            lin.reset_parameters()
-        for norm in self.normalizations:
-            if hasattr(norm, "reset_parameters"):
-                norm.reset_parameters()
+        self.lins[0].reset_parameters()
+        if self.input_norm:
+            self.normalizations[0].reset_parameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply optional input normalization and the linear projection.
