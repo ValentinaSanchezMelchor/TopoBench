@@ -26,14 +26,18 @@ The idea from the paper: instead of a 0/1 incidence matrix, each
 (node, hyperedge) pair gets a learned `d×d` restriction map, and each node and
 hyperedge carries a `d`-dimensional stalk. Those maps define a cellular sheaf
 over the hypergraph, and its sheaf Laplacian takes the place of the usual
-hypergraph Laplacian in the diffusion step. No externally supplied hyperedge
-features are required: the model initializes them from node features, then
-predicts the restriction maps from features. Sheaf Hypergraph Networks are
-designed to resist over-smoothing by enforcing agreement in the transformed
-stalk space rather than directly on the node features.
+hypergraph Laplacian in the diffusion step. The model uses node features and
+the incidence matrix as input. It initializes hyperedge features from the node
+features and uses them to predict the restriction maps. Sheaf Hypergraph
+Networks are designed to reduce over-smoothing. In standard hypergraph
+networks, repeatedly mixing information can make the representations of
+connected nodes increasingly similar. SheafHyperGNN first applies a learned
+transformation to each node–hyperedge connection, allowing nodes to share
+compatible information without forcing their representations to become
+identical.
 
 Key hyperparameters for the submitted implementation (matching the reference
-`SheafHyperGNNDiag` example):
+diagonal `SheafHyperGNN` example):
 
 - diagonal restriction maps, stalk dimension `d=6`
 - `tanh` activation on the restriction maps
@@ -52,33 +56,42 @@ The backbone implements the same diagonal restriction-map builder and linear
 sheaf diffusion as the official repository, with changes required by
 TopoBench's modular and batched execution:
 
-- The reference accepts a PyG `Data` object; the backbone accepts TopoBench's
-  `x_0` and `incidence_hyperedges` arguments through `HypergraphWrapper`.
-- The reference constructs sparse `H`, `B^-1`, and `D^-1` matrices and uses
-  `torch_sparse` matrix products. The backbone applies the identical
-  `I + M - 2 blockdiag(M)` operator with gather/scatter operations. For
-  diagonal restriction maps, the block-diagonal term is computed directly as
-  `alpha^2 B^-1 x`, so memory scales with the number of incidences rather than
-  `num_nodes * num_hyperedges`.
-- The reference caches hyperedge features because it trains one fixed graph.
-  The backbone recomputes them per forward pass so a later TopoBench mini-batch
-  cannot receive stale features.
-- The incidence-matrix width supplies the number of hyperedges, which also
-  handles isolated hyperedges that are absent from the nonzero index list.
-- TopoBench's standard readout replaces the original `lin2` classifier and
-  provides the task-specific node- or graph-level prediction head. Unlike the
-  reference `lin2`, the standard readout includes a learnable bias. The
-  backbone therefore returns the uncompressed `d * hidden_channels` node
-  representation consumed by the readout.
+- The original model receives all graph information inside a PyG `Data`
+  object. In TopoBench, the wrapper instead passes the node features (`x_0`)
+  and node–hyperedge incidence matrix (`incidence_hyperedges`) to the backbone
+  as separate arguments.
+- The original implementation constructs and multiplies several sparse
+  matrices. Our implementation computes the same diffusion operation by
+  collecting and summing contributions along the existing node–hyperedge
+  connections. This avoids explicitly constructing the larger stalk-expanded
+  sheaf incidence matrix and removes the `torch_sparse` dependency.
+- The original implementation trains on one fixed hypergraph, so it computes
+  and stores the hyperedge features once. TopoBench can process different
+  mini-batches, so our implementation recomputes the hyperedge features during
+  every forward pass to ensure they correspond to the current batch.
+- The total number of hyperedges is taken from the number of columns in the
+  incidence matrix. This ensures that isolated hyperedges are still counted,
+  even though they have no node connections and therefore do not appear in the
+  list of nonzero incidences.
+- In the original implementation, the final `lin2` layer converts the learned
+  node embeddings into predictions. In TopoBench, the backbone returns these
+  embeddings with size `d * hidden_channels`, and the standard readout converts
+  them into node- or graph-level predictions for the selected task. The
+  TopoBench readout includes a learnable bias, whereas the original `lin2`
+  layer does not.
 - The wrapper residual is disabled because the reference configuration uses
   `residual_HCHA=False`.
 - The implementation uses ELU between layers to follow the official code. The
   paper presents ReLU as the generic activation in Section 3.3; this
-  paper/code discrepancy is not introduced by this port.
+  paper/code discrepancy is not introduced by this implementation.
 
-The submitted file intentionally implements only `SheafHyperGNNDiag`.
-Orthogonal, low-rank, general-map, and nonlinear `SheafHyperGCN` variants are
-separate architectures and are not part of this PR.
+The submitted implementation intentionally implements only the diagonal restriction-map
+variant of `SheafHyperGNN`. We selected it because the paper's ablation found
+that diagonal maps achieved better accuracy on most tested datasets and
+provided a better balance between complexity and expressivity than low-rank
+and general maps. The orthogonal, low-rank, and general restriction-map
+variants, as well as the nonlinear `SheafHyperGCN` architecture, are outside
+the scope of this PR.
 
 ## Implementation Checklist
 
@@ -91,8 +104,8 @@ separate architectures and are not part of this PR.
 - [x] Run TopoBench pipeline smoke test with `graph/MUTAG`.
 - [x] Run the official GraphUniverse evaluation notebook and add the generated
   `results.json`.
-- [ ] Re-run the final implementation on the cluster to record parameter and
-  epoch-time fields in the notebook-generated results.
+- [ ] Re-run the final implementation on the cluster to record parameter-count
+  and epoch-time fields in the notebook-generated results.
 
 ## Validation
 
@@ -117,14 +130,16 @@ The official evaluator sets the feature-encoder and backbone hidden width to
 | **Total trainable parameters** | **53,942** | **46,627** |
 | Non-trainable parameters | 0 | 0 |
 
-The task totals differ only because community detection predicts 20 classes,
-whereas triangle counting has one regression output. These counts were
-calculated from the instantiated TopoBench models, without modifying the
-notebook-generated `results.json`.
+The two tasks use the same feature encoder and backbone, but different output
+layers. Community detection predicts one of 20 classes, so its output layer has
+more parameters. Triangle counting predicts a single value and therefore uses
+a smaller output layer. The parameter counts were calculated directly from the
+configured TopoBench models.
 
-Mean and standard deviation of training epoch time are not present in the
-current result payload. They will be measured by rerunning the final code on
-the cluster (no timing value yet).
+The current results do not include training-time measurements. After the
+implementation is finalized, we will rerun the official evaluation on the
+cluster to record the average training time per epoch and its variation across
+epochs.
 
 ## Results
 
@@ -132,8 +147,7 @@ The official evaluation completed 36 community-detection and 36
 triangle-counting runs over seeds `42`, `43`, and `44`. Across all structural
 settings and seeds, mean in-distribution community-detection accuracy was
 `0.4721`; mean triangle-counting MSE normalized by the number of structural
-triangles was `0.6734`. The result payload contains no missing or non-finite
-metrics.
+triangles was `0.6734`. All task-relevant reported metrics are finite.
 
 ### In-distribution results by structural setting
 
