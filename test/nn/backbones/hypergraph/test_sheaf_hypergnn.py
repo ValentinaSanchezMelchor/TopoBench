@@ -479,18 +479,33 @@ class TestDiagonalSheafConv:
         assert torch.isfinite(out).all()
         assert torch.allclose(out[isolated], expected_scale * x[isolated])
 
-    def test_empty_incidence_and_residual(self):
-        """The empty-hypergraph fast path remains differentiable and residual."""
+    @pytest.mark.parametrize(
+        ("norm_type", "expected_scale"),
+        [
+            ("degree_norm", 2.0),
+            ("sym_degree_norm", 1.0),
+            ("block_norm", 2.0),
+            ("sym_block_norm", 1.0),
+        ],
+    )
+    def test_empty_incidence_and_residual(self, norm_type, expected_scale):
+        """Empty incidence follows reference normalization and residual rules."""
         num_nodes, num_edges, d, H = 3, 2, 2, 4
         x = torch.randn(num_nodes * d, H)
         h_idx = torch.empty((2, 0), dtype=torch.long)
         h_val = torch.empty(0)
-        conv = _DiagonalSheafConv(H, d, residual=True, bias=False)
+        conv = _DiagonalSheafConv(
+            H,
+            d,
+            norm_type=norm_type,
+            residual=True,
+            bias=False,
+        )
 
         transformed = conv.lin(x)
         out = conv(x, h_idx, h_val, num_nodes, num_edges)
 
-        assert torch.allclose(out, 2.0 * transformed)
+        assert torch.allclose(out, expected_scale * transformed)
 
     @pytest.mark.parametrize(
         "norm_type",

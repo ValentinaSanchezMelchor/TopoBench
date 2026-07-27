@@ -799,12 +799,6 @@ class _DiagonalSheafConv(nn.Module):
         x = self.lin(x)
         data_x = x
 
-        if h_idx.numel() == 0:
-            out = x
-            if self.bias is not None:
-                out = out + self.bias
-            return out + data_x if self.residual else out
-
         node_idx = h_idx[0]
         edge_idx = h_idx[1]
         d_node, b_edge = _normalisation_vectors(
