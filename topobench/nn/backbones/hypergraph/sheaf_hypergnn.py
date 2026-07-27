@@ -644,6 +644,10 @@ def _expand_diagonal(
     producing the sparse ``Nd x Ed`` sheaf incidence representation. Off-diagonal
     coordinates are omitted because the restriction maps are diagonal.
 
+    The expansion follows the reference implementation's ``repeat``, ``permute``,
+    and ``reshape`` structure so its coordinate and value ordering can be
+    compared directly.
+
     Parameters
     ----------
     hyperedge_index : torch.Tensor
@@ -658,11 +662,15 @@ def _expand_diagonal(
     tuple[torch.Tensor, torch.Tensor]
         Expanded sparse coordinates and flattened restriction values.
     """
-    k = torch.arange(stalk_dim, device=hyperedge_index.device)
-    node_block = hyperedge_index[0].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
-    edge_block = hyperedge_index[1].unsqueeze(1) * stalk_dim + k.unsqueeze(0)
-    index = torch.stack([node_block.reshape(-1), edge_block.reshape(-1)])
-    return index, restriction_diagonals.reshape(-1)
+    stalk_offsets = (
+        torch.arange(stalk_dim, device=hyperedge_index.device)
+        .view(1, -1, 1)
+        .repeat(2, 1, 1)
+    )
+    expanded_index = stalk_dim * hyperedge_index.unsqueeze(1) + stalk_offsets
+    expanded_index = expanded_index.permute(0, 2, 1).reshape(2, -1)
+
+    return expanded_index, restriction_diagonals.reshape(-1)
 
 
 class _DiagonalSheafConv(nn.Module):
