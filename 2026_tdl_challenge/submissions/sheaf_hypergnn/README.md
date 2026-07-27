@@ -65,9 +65,11 @@ TopoBench's modular and batched execution:
   cannot receive stale features.
 - The incidence-matrix width supplies the number of hyperedges, which also
   handles isolated hyperedges that are absent from the nonzero index list.
-- The reference's final `lin2` classifier is represented by TopoBench's
-  `NoReadOut` linear head. The backbone therefore returns the uncompressed
-  `d * hidden_channels` node representation consumed by that classifier.
+- TopoBench's standard readout replaces the original `lin2` classifier and
+  provides the task-specific node- or graph-level prediction head. Unlike the
+  reference `lin2`, the standard readout includes a learnable bias. The
+  backbone therefore returns the uncompressed `d * hidden_channels` node
+  representation consumed by the readout.
 - The wrapper residual is disabled because the reference configuration uses
   `residual_HCHA=False`.
 - The implementation uses ELU between layers to follow the official code. The
@@ -87,9 +89,10 @@ separate architectures and are not part of this PR.
 - [x] Add dense-vs-scatter sheaf diffusion sanity test.
 - [x] Update `test/pipeline/test_pipeline.py`.
 - [x] Run TopoBench pipeline smoke test with `graph/MUTAG`.
-- [x] Re-run the official GraphUniverse evaluation notebook after the final
-  architecture cleanup.
-- [x] Add the regenerated `results.json`.
+- [x] Run the official GraphUniverse evaluation notebook and add the generated
+  `results.json`.
+- [ ] Re-run the final implementation on the cluster to record parameter and
+  epoch-time fields in the notebook-generated results.
 
 ## Validation
 
@@ -101,6 +104,28 @@ separate architectures and are not part of this PR.
 - Official `run_evaluation.ipynb`: completed all 72 runs and generated
   [`results.json`](results.json).
 
+## Computational Complexity
+
+The official evaluator sets the feature-encoder and backbone hidden width to
+`64`. Instantiating the two challenge configurations at that width gives:
+
+| Component | Community detection | Triangle counting |
+| --- | ---: | ---: |
+| Feature encoder | 2,138 | 2,138 |
+| Backbone and hypergraph wrapper | 44,104 | 44,104 |
+| Task readout | 7,700 | 385 |
+| **Total trainable parameters** | **53,942** | **46,627** |
+| Non-trainable parameters | 0 | 0 |
+
+The task totals differ only because community detection predicts 20 classes,
+whereas triangle counting has one regression output. These counts were
+calculated from the instantiated TopoBench models, without modifying the
+notebook-generated `results.json`.
+
+Mean and standard deviation of training epoch time are not present in the
+current result payload. They will be measured by rerunning the final code on
+the cluster (no timing value yet).
+
 ## Results
 
 The official evaluation completed 36 community-detection and 36
@@ -109,6 +134,23 @@ settings and seeds, mean in-distribution community-detection accuracy was
 `0.4721`; mean triangle-counting MSE normalized by the number of structural
 triangles was `0.6734`. The result payload contains no missing or non-finite
 metrics.
+
+### In-distribution results by structural setting
+
+Each cell below shows the mean and standard deviation over seeds `42`, `43`,
+and `44`.
+
+![Community-detection accuracy across GraphUniverse structural settings](plots/heatmap_community_detection_accuracy.png)
+
+Community-detection accuracy increases consistently with homophily. The
+highest mean accuracy occurs for high homophily, high average degree, and the
+larger power-law exponent range.
+
+![Triangle-counting normalized MSE across GraphUniverse structural settings](plots/heatmap_triangle_mse_over_triangles.png)
+
+Lower values are better for triangle counting. The model performs best in the
+larger power-law exponent range and is most challenged by dense,
+high-homophily graphs in the smaller exponent range.
 
 ## Reference
 
