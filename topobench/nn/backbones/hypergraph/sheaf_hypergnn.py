@@ -364,7 +364,6 @@ class _MLP(nn.Module):
         input_norm: bool = False,
     ) -> None:
         super().__init__()
-        self.input_norm = input_norm
         self.normalizations = nn.ModuleList(
             [nn.LayerNorm(in_channels) if input_norm else nn.Identity()]
         )
@@ -372,9 +371,11 @@ class _MLP(nn.Module):
 
     def reset_parameters(self) -> None:
         """Reset parameters (reinitialise the linear layers and learnable normalization parameters)."""
-        self.lins[0].reset_parameters()
-        if self.input_norm:
-            self.normalizations[0].reset_parameters()
+        for lin in self.lins:
+            lin.reset_parameters()
+        for norm in self.normalizations:
+            if hasattr(norm, "reset_parameters"):
+                norm.reset_parameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply optional input normalization and the linear projection.
