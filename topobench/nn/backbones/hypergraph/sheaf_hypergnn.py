@@ -25,10 +25,10 @@ following TopoBench-specific adaptations:
 * Hyperedge features are recomputed for every batch. The original code reuses
   them because it processes one fixed complete hypergraph, whereas TopoBench
   batches may contain different hypergraphs.
-* The original code uses sparse matrix multiplication for sheaf diffusion. This
-  version computes the same operation by passing and summing messages between
-  nodes and hyperedges, avoiding both the ``torch_sparse`` dependency in this
-  backbone and large intermediate matrix products.
+* The original code uses ``torch_sparse`` for sparse matrix multiplication.
+  This version materializes the same sparse matrices in the same order using
+  native PyTorch sparse operations, which preserve gradients through the
+  learned restriction-map values with current PyTorch versions.
 * The backbone returns the final ``d * hidden_channels`` node embeddings.
   TopoBench's readout converts them into predictions and replaces the original
   model's final ``lin2`` layer.
@@ -701,8 +701,8 @@ class _DiagonalSheafConv(nn.Module):
     operator ``M = D_norm H B^-1 H^T``, where ``D_norm`` is ``D^-1`` or
     ``D^-1/2`` depending on the normalization variant. It then flips the sign
     of every node-diagonal block and adds the identity. This implementation
-    applies the same ``I + M - 2 * blockdiag(M)`` operator through
-    gather/scatter operations.
+    applies the same ``I + M - 2 * blockdiag(M)`` operator using native PyTorch
+    sparse matrices.
 
     Parameters
     ----------
@@ -778,8 +778,8 @@ class _DiagonalSheafConv(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        h_idx: torch.Tensor,
-        h_val: torch.Tensor,
+        hyperedge_index: torch.Tensor,
+        alpha: torch.Tensor,
         num_nodes: int,
         num_edges: int,
     ) -> torch.Tensor:
@@ -789,9 +789,9 @@ class _DiagonalSheafConv(nn.Module):
         ----------
         x : torch.Tensor
             Stalk-expanded node features.
-        h_idx : torch.Tensor
+        hyperedge_index : torch.Tensor
             Expanded sparse sheaf-incidence coordinates.
-        h_val : torch.Tensor
+        alpha : torch.Tensor
             Expanded restriction-map values.
         num_nodes : int
             Number of nodes.
@@ -811,13 +811,12 @@ class _DiagonalSheafConv(nn.Module):
         x = self.lin(x)
         data_x = x
 
-        node_idx = h_idx[0]
-        edge_idx = h_idx[1]
-        d_node, b_edge = _normalisation_vectors(
+        # Depending on norm_type, use D^-1 or D^-1/2.
+        D_inv, B_inv = _normalisation_vectors(
             x=x,
-            node_idx=node_idx,
-            edge_idx=edge_idx,
-            h_val=h_val,
+            node_idx=hyperedge_index[0],
+            edge_idx=hyperedge_index[1],
+            h_val=alpha,
             num_nodes=num_nodes,
             num_edges=num_edges,
             stalk_dim=self.d,
@@ -825,42 +824,36 @@ class _DiagonalSheafConv(nn.Module):
         )
 
         if self.norm_type in {"sym_degree_norm", "sym_block_norm"}:
-            x_for_diffusion = x * d_node.unsqueeze(-1)
-            identity_term = x_for_diffusion
-        else:
-            x_for_diffusion = x
-            identity_term = x
+            # Compute D^(-1/2) @ x.
+            x = D_inv.unsqueeze(-1) * x
 
-        msg_to_edge = torch_scatter.scatter(
-            x_for_diffusion[node_idx] * h_val.unsqueeze(-1),
-            edge_idx,
-            dim=0,
-            dim_size=num_edges * self.d,
-            reduce="sum",
-        )
-        msg_to_edge = msg_to_edge * b_edge.unsqueeze(-1)
+        H = torch.sparse_coo_tensor(
+            hyperedge_index,
+            alpha,
+            size=(num_nodes * self.d, num_edges * self.d),
+        ).coalesce()
+        H_t = torch.sparse_coo_tensor(
+            hyperedge_index.flip([0]),
+            alpha,
+            size=(num_edges * self.d, num_nodes * self.d),
+        ).coalesce()
 
-        msg_to_node = torch_scatter.scatter(
-            msg_to_edge[edge_idx] * h_val.unsqueeze(-1),
-            node_idx,
-            dim=0,
-            dim_size=num_nodes * self.d,
-            reduce="sum",
-        )
+        B_inv = _sparse_diagonal(B_inv)
+        D_inv = _sparse_diagonal(D_inv)
 
-        diag_msg = _diagonal_block_messages(
-            x=x_for_diffusion,
-            node_idx=node_idx,
-            edge_idx=edge_idx,
-            h_val=h_val,
-            b_edge=b_edge,
-            num_nodes=num_nodes,
-            stalk_dim=self.d,
-        )
+        # Form minus_L = D_inv @ H @ B_inv @ H_t, following the original.
+        minus_L = torch.sparse.mm(B_inv, H_t).coalesce()
+        minus_L = torch.sparse.mm(H, minus_L).coalesce()
+        minus_L = torch.sparse.mm(D_inv, minus_L).coalesce()
 
-        msg_to_node = msg_to_node * d_node.unsqueeze(-1)
-        diag_msg = diag_msg * d_node.unsqueeze(-1)
-        out = identity_term + msg_to_node - 2.0 * diag_msg
+        I_mask = _node_block_mask(num_nodes, self.d, x)
+        Id = _sparse_diagonal(x.new_ones(num_nodes * self.d))
+
+        # Negate the diagonal blocks and add the identity matrix.
+        minus_L = minus_L - 2 * minus_L.mul(I_mask)
+        minus_L = (Id + minus_L).coalesce()
+
+        out = torch.sparse.mm(minus_L, x)
 
         if self.bias is not None:
             out = out + self.bias
@@ -948,58 +941,61 @@ def _normalisation_vectors(
     return node_norm, edge_norm
 
 
-def _diagonal_block_messages(
-    x: torch.Tensor,
-    node_idx: torch.Tensor,
-    edge_idx: torch.Tensor,
-    h_val: torch.Tensor,
-    b_edge: torch.Tensor,
-    num_nodes: int,
-    stalk_dim: int,
-) -> torch.Tensor:
-    """Compute the block-diagonal part of ``H B^-1 H^T x``.
-
-    The reference implementation forms ``H B^-1 H^T`` and then flips the sign
-    of its node-diagonal blocks before adding the identity. For a diagonal
-    restriction map, each expanded incidence coordinate is independent, so its
-    self-message is simply ``alpha^2 * B^-1 * x``. Computing that contribution
-    directly avoids materializing the full sparse node-to-node product.
+def _sparse_diagonal(values: torch.Tensor) -> torch.Tensor:
+    """Create a square sparse matrix with ``values`` on its diagonal.
 
     Parameters
     ----------
-    x : torch.Tensor
-        Stalk-expanded node features.
-    node_idx : torch.Tensor
-        Node-coordinate indices of expanded incidences.
-    edge_idx : torch.Tensor
-        Hyperedge-coordinate indices of expanded incidences.
-    h_val : torch.Tensor
-        Restriction-map values at expanded incidences.
-    b_edge : torch.Tensor
-        Hyperedge normalization vector.
-    num_nodes : int
-        Number of nodes.
-    stalk_dim : int
-        Stalk dimension.
+    values : torch.Tensor
+        Values to place on the matrix diagonal.
 
     Returns
     -------
     torch.Tensor
-        Aggregated node-diagonal messages.
+        Coalesced sparse COO diagonal matrix.
     """
-    if h_val.numel() == 0:
-        return x.new_zeros((num_nodes * stalk_dim, x.shape[-1]))
+    diagonal = torch.arange(values.numel(), device=values.device)
+    indices = torch.stack((diagonal, diagonal))
+    return torch.sparse_coo_tensor(
+        indices,
+        values,
+        size=(values.numel(), values.numel()),
+    ).coalesce()
 
-    diagonal_entries = (
-        h_val.square().unsqueeze(-1)
-        * b_edge[edge_idx].unsqueeze(-1)
-        * x[node_idx]
-    )
 
-    return torch_scatter.scatter(
-        diagonal_entries,
-        node_idx,
-        dim=0,
-        dim_size=num_nodes * stalk_dim,
-        reduce="sum",
-    )
+def _node_block_mask(
+    num_nodes: int,
+    stalk_dim: int,
+    reference: torch.Tensor,
+) -> torch.Tensor:
+    """Return a sparse mask containing every node-diagonal stalk block.
+
+    Parameters
+    ----------
+    num_nodes : int
+        Number of nodes.
+    stalk_dim : int
+        Stalk dimension.
+    reference : torch.Tensor
+        Tensor providing the output device and dtype.
+
+    Returns
+    -------
+    torch.Tensor
+        Coalesced sparse COO node-block mask.
+    """
+    nodes = torch.arange(num_nodes, device=reference.device)
+    stalk_coordinates = torch.arange(stalk_dim, device=reference.device)
+    block_rows = (
+        nodes[:, None, None] * stalk_dim + stalk_coordinates[None, :, None]
+    ).expand(-1, -1, stalk_dim)
+    block_cols = (
+        nodes[:, None, None] * stalk_dim + stalk_coordinates[None, None, :]
+    ).expand(-1, stalk_dim, -1)
+    indices = torch.stack((block_rows.reshape(-1), block_cols.reshape(-1)))
+    size = (num_nodes * stalk_dim, num_nodes * stalk_dim)
+    return torch.sparse_coo_tensor(
+        indices,
+        reference.new_ones(indices.shape[1]),
+        size=size,
+    ).coalesce()
