@@ -203,7 +203,7 @@ settings and seeds, mean in-distribution community-detection accuracy was
 triangles was `0.6742`. These closely reproduce the previous run's corresponding
 means of `0.4721` and `0.6734`. All task-relevant reported metrics are finite.
 
-### In-distribution results by structural setting
+### Test results across graph structures
 
 Each cell below shows the mean and standard deviation over seeds `42`, `43`,
 and `44`.
