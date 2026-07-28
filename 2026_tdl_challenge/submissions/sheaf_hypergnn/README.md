@@ -22,7 +22,7 @@ This PR adds a TopoBench-native implementation of SheafHyperGNN (linear,
 diagonal variant) from Duta et al., "Sheaf Hypergraph Networks" (NeurIPS 2023),
 for the 2026 TDL Challenge.
 
-The main idea: the paper extends a hypergraph so that each node–hyperedge
+**The main idea:** the paper extends a hypergraph so that each node–hyperedge
 connection describes not only whether a node and hyperedge are connected, but
 also how information should pass between them. This additional structure is
 called a cellular sheaf. The model assigns every node and hyperedge its own
@@ -73,11 +73,15 @@ Key hyperparameters for the submitted implementation (matching the reference
 diagonal `SheafHyperGNN` example):
 
 - diagonal restriction maps, stalk dimension `d=6`
+- two diffusion layers with input normalization
 - `tanh` activation on the restriction maps
 - symmetric degree normalization
-- averaged hyperedge initialization
 - `cp_decomp` restriction-map predictor
+- averaged hyperedge initialization, retained for consistency with the
+  reference configuration but not used by the selected `cp_decomp` predictor
 - configured hidden width `256`, dropout `0.7`
+- static restriction maps, with sheaf-map dropout, left projection, residual
+  connections, and the special head disabled
 
 The official challenge evaluator overrides every compatible feature encoder to
 width `64`; because this model derives its hidden width from the encoder, the
@@ -143,10 +147,8 @@ TopoBench's modular and batched execution:
 - `python -m ruff check topobench/nn/backbones/hypergraph/sheaf_hypergnn.py test/nn/backbones/hypergraph/test_sheaf_hypergnn.py`
 - `python -m pytest test/nn/backbones/hypergraph/test_sheaf_hypergnn.py -q`
 - `python -m pytest test/pipeline/test_pipeline.py -q`
-- Official GraphUniverse sanity check: all 24 task/setting configurations
-  passed on an NVIDIA A40.
-- Official `run_evaluation.ipynb`: completed all 72 runs (24 task/setting
-  configurations over three seeds) on one NVIDIA A40 and generated
+- Official `run_evaluation.ipynb`: all 72 runs completed successfully on one
+  NVIDIA A40 (24 task/setting combinations over three seeds) and generated
   [`results.json`](results.json).
 
 ## Computational Complexity
@@ -168,14 +170,13 @@ more parameters. Triangle counting predicts a single value and therefore uses
 a smaller output layer. The parameter counts were recorded directly from each
 configured TopoBench model and are included in `results.json`.
 
-Let `M` be the number of hyperedges, `K` the number of node–hyperedge
-connections, `d` the stalk dimension, `H` the hidden width, and
-`S = Σ_e s_e²`, where `s_e` is the number of nodes in hyperedge `e`. The
-`cp_decomp` builder costs `O((K + M)H² + KHd)`. Each diffusion layer costs
-`O(dHS)` time and may store `O(dS)` nonzero entries. For `L` layers, the
-submitted model therefore costs `O((K + M)H² + KHd + LdHS)` time and
-`O(Kd + dS)` sparse storage. These are worst-case bounds; repeated node pairs
-can share a stored matrix entry.
+Let `N` be the number of nodes, `M` the number of hyperedges, `K` the number of
+node–hyperedge connections, `d` the stalk dimension, `H` the hidden width, and
+`S = Σ_e s_e²`, where `s_e` is the size of hyperedge `e`. Excluding the feature
+encoder and readout, the static-sheaf backbone costs
+`O((N + M)dH² + (K + M)H² + KHd + L(NdH² + dHS))` time for `L` layers. Its
+main sparse matrices use `O(Kd + dS + Nd² + Md)` storage. These are worst-case
+bounds; repeated node pairs can share an entry in the diffusion product.
 
 ### Empirical runtime
 
