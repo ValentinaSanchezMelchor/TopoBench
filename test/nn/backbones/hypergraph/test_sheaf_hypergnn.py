@@ -18,7 +18,7 @@ from topobench.nn.backbones.hypergraph.sheaf_hypergnn import (
 from topobench.nn.readouts import NoReadOut
 from topobench.nn.wrappers import HypergraphWrapper
 
-# Helpers
+### Helpers
 
 
 def _make_incidence(num_nodes=8, num_edges=5, seed=0):
@@ -112,7 +112,13 @@ def _dense_sheaf_conv_reference(conv, x, h_idx, h_val, num_nodes, num_edges):
     )
 
 
-# Tests for incidence conversion
+### Tests for incidence conversion
+
+# TopoBench stores hypergraph structure as a dense or sparse node-by-hyperedge
+# incidence matrix. SheafHyperGNN instead uses a two-row coordinate tensor
+# containing one (node, hyperedge) pair per nonzero incidence. The conversion
+# also returns the original number of hyperedges so that empty incidence
+# columns, representing isolated hyperedges, are not lost.
 
 
 class TestIncidenceToHyperedgeIndex:
@@ -185,11 +191,15 @@ class TestIncidenceToHyperedgeIndex:
         assert num_edges == 3
 
 
-# Tests for SheafHyperGNN model
+### Tests for SheafHyperGNN model
 
 
 class TestSheafHyperGNN:
     """Tests for SheafHyperGNN forward pass and parameter reset."""
+
+    # The submitted configuration uses only a subset of the options retained
+    # from the reference implementation. Compatibility tests below also cover
+    # the other options that remain part of the backbone's public interface.
 
     def test_diagonal_forward_shape(self):
         """Output preserves every stalk coordinate for the TopoBench readout."""
@@ -206,7 +216,7 @@ class TestSheafHyperGNN:
         assert hyp is None
 
     def test_stalk_dim_one(self):
-        """stalk_dim=1 produces a valid scalar-sheaf representation."""
+        """stalk_dim=1 (special case) produces a valid scalar-sheaf representation."""
         num_nodes, in_ch, hidden_ch = 8, 12, 16
         inc = _make_incidence(num_nodes, num_edges=5)
         x = torch.randn(num_nodes, in_ch)
@@ -441,7 +451,7 @@ class TestSheafHyperGNN:
             )
 
 
-# Tests for _MLP
+### Tests for _MLP
 
 
 class TestMLP:
@@ -497,11 +507,14 @@ class TestMLP:
         )
 
 
-# Tests for the diagonal sheaf builder
+### Tests for the diagonal sheaf builder
 
 
 class TestDiagonalSheafBuilder:
     """Tests for restriction-map predictor."""
+
+    # The submission uses cp_decomp with tanh and no sheaf dropout or special
+    # head. The tests also cover the other supported reference variants.
 
     @pytest.fixture
     def basic_inputs(self):
@@ -736,11 +749,15 @@ class TestDiagonalSheafBuilder:
         assert torch.equal(expanded_values, expected_values)
 
 
-# Tests for diagonal sheaf diffusion
+### Tests for diagonal sheaf diffusion
 
 
 class TestDiagonalSheafConv:
     """Tests for sheaf diffusion convolution."""
+
+    # The submission uses symmetric degree normalization without left
+    # projection or a convolution-level residual. The tests also cover the
+    # other supported reference variants.
 
     def test_output_shape(self):
         """Output shape equals input shape [N*d, H]."""
@@ -955,8 +972,8 @@ class TestDiagonalSheafConv:
         "norm_type",
         ["degree_norm", "sym_degree_norm", "block_norm", "sym_block_norm"],
     )
-    def test_scatter_diffusion_matches_dense_reference(self, norm_type):
-        """Scatter implementation matches the explicit reference operator."""
+    def test_diffusion_matches_dense_reference(self, norm_type):
+        """Diffusion output matches the explicit dense reference operator."""
         torch.manual_seed(0)
         num_nodes, num_edges, d, H = 3, 2, 2, 4
         hyperedge_index = torch.tensor(
