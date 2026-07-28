@@ -34,6 +34,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from omegaconf import OmegaConf, open_dict
 
+from topobench.callbacks.timer_callback import PipelineTimer
 from topobench.data.preprocessor import PreProcessor
 from topobench.dataloader import TBDataloader
 from topobench.run import run
@@ -612,6 +613,7 @@ def run_challenge_grid(
                 }
                 if wandb_cfg_metrics:
                     row["wandb_config"] = wandb_cfg_metrics
+                row.update(_collect_run_metadata(object_dict))
                 results.append(row)
 
     print(f"\nFinished {len(results)} run(s).")
@@ -1431,6 +1433,62 @@ _WANDB_RUN_CONFIG_KEYS: tuple[str, ...] = (
     "model/params/trainable",
     "model/params/non_trainable",
 )
+
+
+def _collect_run_metadata(object_dict: dict[str, Any]) -> dict[str, Any]:
+    """Collect runtime and parameter data directly from a completed run.
+
+    Parameters
+    ----------
+    object_dict : dict[str, Any]
+        Objects returned by :func:`topobench.run.run`.
+
+    Returns
+    -------
+    dict[str, Any]
+        Flat result fields containing model parameter counts and, when the
+        pipeline timer is present, epoch-time statistics.
+    """
+    model = object_dict["model"]
+    metadata: dict[str, Any] = {
+        "model_params_total": sum(p.numel() for p in model.parameters()),
+        "model_params_trainable": sum(
+            p.numel() for p in model.parameters() if p.requires_grad
+        ),
+        "model_params_non_trainable": sum(
+            p.numel() for p in model.parameters() if not p.requires_grad
+        ),
+    }
+
+    timer = next(
+        (
+            callback
+            for callback in object_dict.get("callbacks", [])
+            if isinstance(callback, PipelineTimer)
+        ),
+        None,
+    )
+    if timer is None:
+        return metadata
+
+    epoch_times = np.asarray(timer.sums.get("train_epoch", []), dtype=float)
+    if epoch_times.size == 0:
+        return metadata
+
+    # Preserve the timer's ten-epoch warm-up policy while retaining at least
+    # one measurement when an early-stopped or smoke run is shorter.
+    warmup_epochs = min(timer.skip_first_n, max(epoch_times.size - 1, 0))
+    measured_times = epoch_times[warmup_epochs:]
+    metadata.update(
+        {
+            "train_epoch_time_mean_seconds": float(np.mean(measured_times)),
+            "train_epoch_time_std_seconds": float(np.std(measured_times)),
+            "train_epochs_timed": int(measured_times.size),
+            "train_epochs_total": int(epoch_times.size),
+            "train_epoch_warmup_epochs_excluded": int(warmup_epochs),
+        }
+    )
+    return metadata
 
 
 def _find_wandb_run_config_yaml(output_dir: Path) -> Path | None:
